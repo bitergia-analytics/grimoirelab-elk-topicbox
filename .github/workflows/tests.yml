@@ -1,0 +1,90 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '!*.*.*'
+      - '*.*.*-*'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+
+      # MySQL
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      # Redis
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    name: Python ${{ matrix.python-version }} for ES ${{ matrix.elasticsearch-version }}
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9]
+        elasticsearch-version: [6.8.6, 7.2.0]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@93ea575cb5d8a053eaa0ac8fa3b40d7e05a33cc8 # 3.1.0
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@13ae5bb136fac2878aff31522b9efb785519f984 # v4.3.0
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install and set up Poetry
+      run: |
+        curl -sSL https://install.python-poetry.org | python3 -
+        echo "PATH=$HOME/.poetry/bin:$PATH" >> $GITHUB_ENV
+    - name: Runs Elasticsearch ${{ matrix.elasticsearch-version }}
+      uses: elastic/elastic-github-actions/elasticsearch@master
+      with:
+        stack-version: ${{ matrix.elasticsearch-version }}
+    - name: Install dependencies
+      run: |
+        poetry install -vvv
+        poetry add -D coveralls
+        poetry run pip install -r requirements_dev.txt
+    - name: Verify Elasticsearch connection
+      run: |
+        curl -fsSL "http://localhost:9200/_cat/health?h=status"
+    - name: Setup MySQL Database
+      env:
+        DB_HOST: 127.0.0.1
+        DB_PORT: ${{ job.services.mysql.ports[3306] }}
+      run: |
+        mysql --host $DB_HOST --port $DB_PORT -uroot -proot -e "CREATE DATABASE test_sh"
+    - name: Run Sortinghat Server
+      run: |
+        git clone --single-branch https://github.com/chaoss/grimoirelab-sortinghat /tmp/sortinghat
+        cp tests/sortinghat_settings.py /tmp/sortinghat/config/settings/sortinghat_settings.py
+        cd /tmp/sortinghat
+        poetry install -vvv
+        poetry run python manage.py migrate --settings=config.settings.sortinghat_settings
+        poetry run python manage.py createsuperuser --username root --noinput --email 'root@root.com' --settings=config.settings.sortinghat_settings
+        poetry run python manage.py runserver --settings=config.settings.sortinghat_settings &
+        poetry run python manage.py rqworker --settings=config.settings.sortinghat_settings &
+        cd
+    - name: Lint with flake8
+      run: |
+        poetry run flake8
+    - name: Tests and Coverage
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        cd tests
+        poetry run coverage run --source=grimoire_elk run_tests.py
+        poetry run coveralls --service=github

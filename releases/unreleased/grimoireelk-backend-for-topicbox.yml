@@ -1,0 +1,8 @@
+---
+title: GrimoireELK backend for Topicbox
+category: added
+author: Jose Javier Merchante <jjmerchante@bitergia.com>
+issue: null
+notes: >
+  GrimoireELK backend for Topicbox backend to fetch messages
+  from groups and store them in ElasticSearch.
